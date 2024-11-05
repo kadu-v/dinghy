@@ -42,7 +42,12 @@ pub struct AppleSimDevice {
 unsafe impl Send for IosDevice {}
 
 impl IosDevice {
-    pub fn new(name: String, id: String, arch_cpu: &str, os: String) -> Result<IosDevice> {
+    pub fn new(
+        name: String,
+        id: String,
+        arch_cpu: &str,
+        os: String,
+    ) -> Result<IosDevice> {
         let cpu = match &*arch_cpu {
             "arm64" | "arm64e" => "aarch64",
             _ => "armv7",
@@ -57,7 +62,16 @@ impl IosDevice {
     }
 
     fn is_pre_ios_17(&self) -> Result<bool> {
-        Ok(semver::Version::parse(&self.os)?.major < 17)
+        // NOTE:
+        // The iOS version can only be in the format x.y.z or x.y.
+        // This is because it's already a released OS version,
+        // so it won’t contain any identifiers like "alpha" or "beta."
+        let dots = self.os.matches('.').count();
+        let mut os_version = self.os.clone();
+        if dots < 2 {
+            os_version.push_str(".0");
+        }
+        Ok(semver::Version::parse(&os_version)?.major < 17)
     }
 
     fn is_locked(&self) -> Result<bool> {
@@ -73,11 +87,10 @@ impl IosDevice {
         if !result.status.success() {
             bail!("Device lock query failed\n",)
         }
-        Ok(
-            json::parse(std::str::from_utf8(&result.stdout)?)?["result"]["passcodeRequired"]
-                .as_bool()
-                .unwrap(),
-        )
+        Ok(json::parse(std::str::from_utf8(&result.stdout)?)?["result"]
+            ["passcodeRequired"]
+            .as_bool()
+            .unwrap())
     }
 
     fn make_app(
@@ -95,7 +108,8 @@ impl IosDevice {
             .last()
             .ok_or_else(|| anyhow!("no app id ?"))?;
 
-        let mut build_bundle = make_apple_app(project, build, runnable, &app_id, None)?;
+        let mut build_bundle =
+            make_apple_app(project, build, runnable, &app_id, None)?;
         build_bundle.app_id = Some(app_id.to_owned());
 
         super::xcode::sign_app(&build_bundle, &signing)?;
@@ -142,7 +156,12 @@ impl IosDevice {
         debugger: bool,
     ) -> Result<()> {
         if self.is_pre_ios_17()? {
-            return self.run_remote_with_ios_deploy(build_bundle, args, envs, debugger);
+            return self.run_remote_with_ios_deploy(
+                build_bundle,
+                args,
+                envs,
+                debugger,
+            );
         }
         let app_list = process::Command::new("pymobiledevice3")
             .args("apps list --no-color --udid".split_whitespace())
@@ -186,16 +205,20 @@ impl IosDevice {
             .spawn()?;
         let lldb_connection_string = BufReader::new(server.stdout.unwrap())
             .lines()
-            .find(|l| l.as_ref().unwrap().contains("process connect connect://"))
+            .find(|l| {
+                l.as_ref().unwrap().contains("process connect connect://")
+            })
             .unwrap()
             .unwrap();
-        let connection_details = lldb_connection_string.split_whitespace().nth(3).unwrap();
+        let connection_details =
+            lldb_connection_string.split_whitespace().nth(3).unwrap();
         debug!("iOS debugserver started: {connection_details}");
 
         if self.is_locked()? {
             eprint!(
                 "{}",
-                format!("\n\n      Please unlock {}! ", &self.name).bright_yellow()
+                format!("\n\n      Please unlock {}! ", &self.name)
+                    .bright_yellow()
             );
             loop {
                 std::thread::sleep(Duration::from_millis(300));
@@ -448,7 +471,8 @@ impl Device for AppleSimDevice {
         args: &[&str],
         envs: &[&str],
     ) -> Result<BuildBundle> {
-        let build_bundle = self.install_app(&project, &build, &build.runnable)?;
+        let build_bundle =
+            self.install_app(&project, &build, &build.runnable)?;
         if get_current_verbosity() < 1 {
             // we log the full command for verbosity > 1, just log a short message when the user
             // didn't ask for verbose output
@@ -480,7 +504,10 @@ impl Display for AppleSimDevice {
 }
 
 impl DeviceCompatibility for IosDevice {
-    fn is_compatible_with_simulator_platform(&self, platform: &AppleDevicePlatform) -> bool {
+    fn is_compatible_with_simulator_platform(
+        &self,
+        platform: &AppleDevicePlatform,
+    ) -> bool {
         if platform.sim.is_some() {
             return false;
         }
@@ -493,7 +520,10 @@ impl DeviceCompatibility for IosDevice {
 }
 
 impl DeviceCompatibility for AppleSimDevice {
-    fn is_compatible_with_simulator_platform(&self, platform: &AppleDevicePlatform) -> bool {
+    fn is_compatible_with_simulator_platform(
+        &self,
+        platform: &AppleDevicePlatform,
+    ) -> bool {
         if let Some(sim) = &platform.sim {
             self.sim_type == *sim
         } else {
@@ -510,15 +540,17 @@ fn make_apple_app(
     sim_type: Option<&AppleSimulatorType>,
 ) -> Result<BuildBundle> {
     use crate::project;
-    let build_bundle = make_remote_app_with_name(project, build, Some("Dinghy.app"))?;
-    project::rec_copy(&runnable.exe, build_bundle.bundle_dir.join("Dinghy"), false)?;
+    let build_bundle =
+        make_remote_app_with_name(project, build, Some("Dinghy.app"))?;
+    project::rec_copy(
+        &runnable.exe,
+        build_bundle.bundle_dir.join("Dinghy"),
+        false,
+    )?;
     let magic = process::Command::new("file")
-        .arg(
-            runnable
-                .exe
-                .to_str()
-                .ok_or_else(|| anyhow!("path conversion to string: {:?}", runnable.exe))?,
-        )
+        .arg(runnable.exe.to_str().ok_or_else(|| {
+            anyhow!("path conversion to string: {:?}", runnable.exe)
+        })?)
         .log_invocation(3)
         .output()?;
     let magic = String::from_utf8(magic.stdout)?;
@@ -530,7 +562,11 @@ fn make_apple_app(
     Ok(build_bundle)
 }
 
-fn launch_app(dev: &AppleSimDevice, app_args: &[&str], _envs: &[&str]) -> Result<()> {
+fn launch_app(
+    dev: &AppleSimDevice,
+    app_args: &[&str],
+    _envs: &[&str],
+) -> Result<()> {
     use std::io::Write;
     let dir = tempfile::TempDir::with_prefix("mobiledevice-rs-lldb")?;
     let tmppath = dir.path();
@@ -547,7 +583,8 @@ fn launch_app(dev: &AppleSimDevice, app_args: &[&str], _envs: &[&str]) -> Result
         .to_string_lossy()
         .into_owned();
     let stdout_param = &format!("--stdout={}", stdout);
-    let mut xcrun_args: Vec<&str> = vec!["simctl", "launch", "-w", stdout_param, &dev.id, "Dinghy"];
+    let mut xcrun_args: Vec<&str> =
+        vec!["simctl", "launch", "-w", stdout_param, &dev.id, "Dinghy"];
     xcrun_args.extend(app_args);
     debug!("Launching app via xcrun using args: {:?}", xcrun_args);
     let launch_output = process::Command::new("xcrun")
@@ -602,7 +639,8 @@ fn launch_app(dev: &AppleSimDevice, app_args: &[&str], _envs: &[&str]) -> Result
         .rev()
         .find(|line| line.contains("exited with status"));
     if let Some(exit_status_line) = exit_status_line {
-        let words: Vec<&str> = exit_status_line.split_whitespace().rev().collect();
+        let words: Vec<&str> =
+            exit_status_line.split_whitespace().rev().collect();
         if let Some(exit_status) = words.get(1) {
             let exit_status = exit_status.parse::<u32>()?;
             if exit_status == 0 {
@@ -636,8 +674,10 @@ fn launch_lldb_simulator(
     {
         let python_lldb_support = tmppath.join("helpers.py");
         let helper_py = include_str!("helpers.py");
-        let helper_py = helper_py.replace("ENV_VAR_PLACEHOLDER", &envs.join("\", \""));
-        fs::File::create(&python_lldb_support)?.write_fmt(format_args!("{}", &helper_py))?;
+        let helper_py =
+            helper_py.replace("ENV_VAR_PLACEHOLDER", &envs.join("\", \""));
+        fs::File::create(&python_lldb_support)?
+            .write_fmt(format_args!("{}", &helper_py))?;
         let mut script = fs::File::create(&lldb_script_filename)?;
         writeln!(script, "platform select ios-simulator")?;
         writeln!(script, "target create {}", installed)?;
